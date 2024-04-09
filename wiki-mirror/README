@@ -1,0 +1,129 @@
+# Wikipedia Mirror
+
+### Intro
+
+Wikipedia's infrastructure can't always stand up to large DDoS attacks, but thankfully they provide regular database dumps and static HTML archives to the public, and have permissive licensing that allows for rehosting with modification.
+
+#### Quickstart
+
+```bash
+# 1. Download the Kiwix-Serve static binary from https://www.kiwix.org/en/downloads/kiwix-serve/
+wget 'https://download.kiwix.org/release/kiwix-tools/kiwix-tools_linux-x86_64.tar.gz'
+tar -xzf kiwix-tools_linux-x86_64-3.0.1.tar.gz && cd kiwix-tools_linux-x86_64-3.0.1
+
+# 2. Download a compressed Wikipedia dump from https://dumps.wikimedia.org/other/kiwix/zim/wikipedia/ (79GB, images included!)
+wget --continue "https://download.kiwix.org/zim/wikipedia_en_all_maxi.zim"
+
+# 3. Start the kiwix server, then visit http://127.0.0.1:8888
+./kiwix-serve --verbose --port 8888 "$PWD/wikipedia_en_all_maxi_2018-10.zim"
+```
+---
+
+
+#### Getting Started
+
+We start our setup with the static html archive or proxy and before attempting to run a full MediaWiki Server. The mirrors should be able to serve articles with images and search, but it doesn't look exactly like Wikipedia.org.
+
+##### Prerequisites
+
+1. **Provision a server to act as your Wikipedia mirror**
+
+   We can use a cheap VPS provider like DigitalOcean, Vultr, Hetzner, etc. For the static ZIM archive and MediaWiki server methods we need significant disk space, so a home server with a cheap external HD may be a better option.
+
+2. **Purchase a new domain or create a subdomain to host your mirror**
+
+   You can use Google Domains, NameCheap, GoDaddy, etc. any registrar will work.
+
+   *In the setup examples below, replace `wiki.example.com` with the domain you chose.* (We already own a domain, but testing the working doesn't require usage of a domain name.)
+
+3. **Point the DNS records for the domain to your mirror server**
+
+   Configure these records via your DNS provider (e.g. NameCheap, DigitalOcean, CloudFlare, etc.):
+
+   - `wiki.example.com` `A` -> `your server's public ip` (the root domain)
+   - `en.wiki.example.com` `CNAME` -> `wiki.example.com` (the wiki domain)
+   - `upload.wiki.example.com` `CNAME` ->  `wiki.example.com` (the uploads/media domain)
+
+4. **Create a directory to store the project, and a dotenv file for your config options**
+
+    Not all of these values are needed for all the methods, but it's easier to just define all of them in one place and remove things later that turn out to be unneeded.
+
+    ```bash
+    mkdir -p /opt/wiki
+    nano /opt/wiki/.env
+    ```
+    *Make sure to replace the example values like `wiki.example.com` with your own.*
+    ```bash
+    PROJECT_DIR="/opt/wiki"
+    CONFIG_DIR="$PROJECT_DIR/etc/nginx"
+    CACHE_DIR="$PROJECT_DIR/data/cache"
+    CERTS_DIR="$PROJECT_DIR/data/certs"
+    LOGS_DIR="$PROJECT_DIR/data/logs"
+
+    LANG="en"                                 
+    LISTEN_PORT_HTTP="80"                     
+    LISTEN_PORT_HTTPS="443"                   
+    LISTEN_HOST="wiki.example.com"            # root domain to listen on
+    LISTEN_WIKI="$LANG.$LISTEN_HOST"          
+    LISTEN_MEDIA="upload.$LISTEN_HOST"
+
+    UPSTREAM_HOST="wikipedia.org"             
+    UPSTREAM_WIKI="$LANG.$UPSTREAM_HOST"      # upstream domain for wiki
+    UPSTREAM_MEDIA="upload.wikimedia.org"     
+
+    # Only needed if using an nginx reverse proxy:
+    SSL_CRT="$CERTS_DIR/$LISTEN_HOST.crt"
+    SSL_KEY="$CERTS_DIR/$LISTEN_HOST.key"
+    SSL_DH="$CERTS_DIR/$LISTEN_HOST.dh"
+
+    CACHE_SIZE="100G".
+    CACHE_REQUESTS="GET HEAD POST"           
+    CACHE_RESPONSES="200 206 302"             
+    CACHE_DURATION="max"                      
+
+    ACCESS_LOG="'$LOGS_DIR/nginx.out' trace"  
+    ERROR_LOG="'$LOGS_DIR/nginx.err' warn"    
+    ```    
+---
+
+#### Choosing a Wikipedia archive dump
+
+- https://download.kiwix.org/zim/wikipedia/ (for BitTorrent add `.torrent` to the end of any `.zim` url)
+- https://en.wikipedia.org/wiki/MediaWiki
+- https://www.mediawiki.org/wiki/MediaWiki
+- https://www.mediawiki.org/wiki/Download
+- https://www.wikidata.org/wiki/Wikidata:Database_download
+- https://dumps.wikimedia.org/backup-index.html
+
+##### ZIM Static HTML Dump
+
+Wikipedia HTML dumps are provided in a highly-compressed web-archiving format called [ZIM](https://openzim.org). They can be served using a ZIM server like Kiwix (the most common one), or [ZimReader](https://openzim.org/wiki/Zimreader), [GoZIM](https://github.com/akhenakh/gozim), & [others](https://openzim.org/wiki/Readers).
+
+Download the chosen Wikipedia ZIM archive (e.g. `wikipedia_en_all_maxi_2018-10.zim`)
+
+```bash
+mkdir -p /opt/wiki/data/dumps && cd /opt/wiki/data/dumps
+
+transmission-cli --download-dir . 'magnet:?xt=urn:btih:O2F3E2JKCEEBCULFP2E2MRUGEVFEIHZW'
+
+wget -c 'https://dumps.wikimedia.org/other/kiwix/zim/wikipedia/wikipedia_en_all_maxi_2018-10.zim'
+wget -c 'https://ftpmirror.your.org/pub/kiwix/zim/wikipedia/wikipedia_en_all_maxi_2018-10.zim'
+wget -c 'https://download.kiwix.org/zim/wikipedia/wikipedia_en_all_maxi_2018-10.zim'
+
+stat --printf="%s" wikipedia_en_all_maxi_2018-10.zim | grep 83853668638
+md5sum wikipedia_en_all_maxi_2018-10.zim | openssl dgst -md5 -binary | openssl enc -base64 | grep 01eMQki29P9vD5F2h6zWwQ
+```
+
+#### Run a caching proxy in front of Wikipedia.org
+
+##### With Nginx
+
+Set the following options in your `/opt/wiki/.env` config file:
+  `UPSTREAM_HOST=wikipedia.org`
+  `UPSTREAM_WIKI=en.wikipedia.org`
+  `UPSTREAM_MEDIA=upload.wikimedia.org`
+
+
+Restart nginx to apply your config with `systemctl restart nginx`.
+
+The mirror should now be running and proxying requests to Wikipedia.org!
